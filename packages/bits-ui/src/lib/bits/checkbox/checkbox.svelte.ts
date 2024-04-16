@@ -4,19 +4,28 @@
 
 import { getContext, setContext } from "svelte";
 import { getAriaChecked, getAriaRequired, getDataDisabled } from "$lib/internal/attrs.js";
-import { type Box, type ReadonlyBox, boxWithState, readonlyBox } from "$lib/internal/box.svelte.js";
+import {
+	type Box,
+	type BoxedValues,
+	type ReadonlyBox,
+	type ReadonlyBoxedValues,
+	boxedState,
+	readonlyBox,
+} from "$lib/internal/box.svelte.js";
 import { type EventCallback, composeHandlers } from "$lib/internal/events.js";
 import { kbd } from "$lib/internal/kbd.js";
 
-type CheckboxRootStateProps = {
-	checked: Box<boolean | "indeterminate">;
-	disabled: ReadonlyBox<boolean>;
-	required: ReadonlyBox<boolean>;
-	name: ReadonlyBox<string | undefined>;
-	value: ReadonlyBox<string | undefined>;
-	onclick: ReadonlyBox<EventCallback<MouseEvent>>;
-	onkeydown: ReadonlyBox<EventCallback<KeyboardEvent>>;
-};
+type CheckboxRootStateProps = ReadonlyBoxedValues<{
+	disabled: boolean;
+	required: boolean;
+	name: string | undefined;
+	value: string | undefined;
+	onclick: EventCallback<MouseEvent>;
+	onkeydown: EventCallback<KeyboardEvent>;
+}> &
+	BoxedValues<{
+		checked: boolean | "indeterminate";
+	}>;
 
 function getCheckboxDataState(checked: boolean | "indeterminate") {
 	if (checked === "indeterminate") {
@@ -31,8 +40,8 @@ class CheckboxRootState {
 	required = undefined as unknown as ReadonlyBox<boolean>;
 	name: ReadonlyBox<string | undefined>;
 	value: ReadonlyBox<string | undefined>;
-	onclickProp = boxWithState<CheckboxRootStateProps["onclick"]>(readonlyBox(() => () => {}));
-	onkeydownProp = boxWithState<CheckboxRootStateProps["onkeydown"]>(readonlyBox(() => () => {}));
+	onclickProp = boxedState<CheckboxRootStateProps["onclick"]>(readonlyBox(() => () => { }));
+	onkeydownProp = boxedState<CheckboxRootStateProps["onkeydown"]>(readonlyBox(() => () => { }));
 	#attrs = $derived({
 		"data-disabled": getDataDisabled(this.disabled.value),
 		"data-state": getCheckboxDataState(this.checked.value),
@@ -135,7 +144,7 @@ class CheckboxInputState {
  * CONTEXT METHODS
  */
 
-export const CHECKBOX_ROOT_KEY = Symbol("Checkbox.Root");
+export const CHECKBOX_ROOT_KEY = "Checkbox.Root";
 
 export function setCheckboxRootState(props: CheckboxRootStateProps) {
 	return setContext(CHECKBOX_ROOT_KEY, new CheckboxRootState(props));

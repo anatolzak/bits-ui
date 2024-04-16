@@ -1,19 +1,19 @@
-import { getContext, setContext } from "svelte";
+import { getContext, onMount, setContext } from "svelte";
 import {
 	type Box,
 	type BoxedValues,
 	type EventCallback,
 	type ReadonlyBox,
 	type ReadonlyBoxedValues,
-	boxWithState,
+	boxedState,
 	composeHandlers,
-	dataDisabledAttrs,
 	getAriaDisabled,
 	getAriaExpanded,
 	getDataDisabled,
+	getDataOpenClosed,
 	kbd,
-	openClosedAttrs,
 	readonlyBox,
+	styleToString,
 	verifyContextDeps,
 } from "$lib/internal/index.js";
 
@@ -23,13 +23,11 @@ import {
 type AccordionBaseStateProps = ReadonlyBoxedValues<{
 	id: string;
 	disabled: boolean;
-	forceVisible: boolean;
 }>;
 
 class AccordionBaseState {
 	id = undefined as unknown as ReadonlyBox<string>;
 	disabled: ReadonlyBox<boolean>;
-	forceVisible: ReadonlyBox<boolean>;
 	#attrs = $derived({
 		id: this.id.value,
 		"data-accordion-root": "",
@@ -38,7 +36,6 @@ class AccordionBaseState {
 	constructor(props: AccordionBaseStateProps) {
 		this.id = props.id;
 		this.disabled = props.disabled;
-		this.forceVisible = props.forceVisible;
 	}
 
 	get props() {
@@ -50,7 +47,7 @@ class AccordionBaseState {
  * SINGLE
  */
 
-type AccordionSingleStateProps = AccordionBaseStateProps & BoxedValues<{ value: string }>;
+type AccordionSingleStateProps = AccordionBaseStateProps & BoxedValues<{ value: string; }>;
 export class AccordionSingleState extends AccordionBaseState {
 	#value: Box<string>;
 	isMulti = false as const;
@@ -93,7 +90,7 @@ export class AccordionMultiState extends AccordionBaseState {
 		if (this.includesItem(item)) {
 			this.#value.value = this.#value.value.filter((v) => v !== item);
 		} else {
-			this.#value.value = [...this.#value.value, item];
+			this.#value.value.push(item);
 		}
 	}
 }
@@ -112,13 +109,13 @@ type AccordionItemStateProps = ReadonlyBoxedValues<{
 export class AccordionItemState {
 	#value: ReadonlyBox<string>;
 	disabled = undefined as unknown as ReadonlyBox<boolean>;
-	root = undefined as unknown as AccordionState;
-	isDisabled = $derived(this.disabled.value || this.root.disabled.value);
+	root: AccordionState = undefined as unknown as AccordionState;
 	isSelected = $derived(this.root.includesItem(this.value));
+	isDisabled = $derived(this.disabled.value || this.root.disabled.value);
 	#attrs = $derived({
 		"data-accordion-item": "",
-		"data-state": this.isSelected ? "open" : "closed",
-		"data-disabled": this.isDisabled ? "" : undefined,
+		"data-state": getDataOpenClosed(this.isSelected),
+		"data-disabled": getDataDisabled(this.isDisabled),
 	} as const);
 
 	constructor(props: AccordionItemStateProps) {
@@ -143,8 +140,8 @@ export class AccordionItemState {
 		return new AccordionTriggerState(props, this);
 	}
 
-	createContent() {
-		return new AccordionContentState(this);
+	createContent(props: AccordionContentStateProps) {
+		return new AccordionContentState(props, this);
 	}
 }
 
@@ -164,9 +161,9 @@ class AccordionTriggerState {
 	id = undefined as unknown as ReadonlyBox<string>;
 	root = undefined as unknown as AccordionState;
 	itemState = undefined as unknown as AccordionItemState;
-	onclickProp = boxWithState<AccordionTriggerStateProps["onclick"]>(readonlyBox(() => () => {}));
-	onkeydownProp = boxWithState<AccordionTriggerStateProps["onkeydown"]>(
-		readonlyBox(() => () => {})
+	onclickProp = boxedState<AccordionTriggerStateProps["onclick"]>(readonlyBox(() => () => { }));
+	onkeydownProp = boxedState<AccordionTriggerStateProps["onkeydown"]>(
+		readonlyBox(() => () => { })
 	);
 
 	// Disabled if the trigger itself, the item it belongs to, or the root is disabled
@@ -180,7 +177,7 @@ class AccordionTriggerState {
 		"aria-disabled": getAriaDisabled(this.isDisabled),
 		"data-disabled": getDataDisabled(this.isDisabled),
 		"data-value": this.itemState.value,
-		"data-state": openClosedAttrs(this.itemState.isSelected),
+		"data-state": getDataOpenClosed(this.itemState.isSelected),
 		"data-accordion-trigger": "",
 	} as const);
 
@@ -223,12 +220,14 @@ class AccordionTriggerState {
 		if (!candidateItems.length) return;
 
 		const currentIndex = candidateItems.indexOf(itemEl);
+
 		const keyToIndex = {
 			[kbd.ARROW_DOWN]: (currentIndex + 1) % candidateItems.length,
 			[kbd.ARROW_UP]: (currentIndex - 1 + candidateItems.length) % candidateItems.length,
 			[kbd.HOME]: 0,
 			[kbd.END]: candidateItems.length - 1,
 		};
+
 		candidateItems[keyToIndex[e.key]!]?.focus();
 	});
 
@@ -245,17 +244,74 @@ class AccordionTriggerState {
  * CONTENT
  */
 
+type AccordionContentStateProps = BoxedValues<{
+	presentEl: HTMLElement | undefined;
+}>;
+
 class AccordionContentState {
 	item = undefined as unknown as AccordionItemState;
+	currentStyle = boxedState<{ transitionDuration: string; animationName: string; } | undefined>(
+		undefined
+	);
+	isMountAnimationPrevented = $state(false);
+	width = boxedState(0);
+	height = boxedState(0);
+	presentEl: Box<HTMLElement | undefined> = boxedState<HTMLElement | undefined>(undefined);
+	present = $derived(this.item.isSelected);
+
 	#attrs = $derived({
-		"data-state": openClosedAttrs(this.item.isSelected),
-		"data-disabled": dataDisabledAttrs(this.item.isDisabled),
+		"data-state": getDataOpenClosed(this.item.isSelected),
+		"data-disabled": getDataDisabled(this.item.isDisabled),
 		"data-value": this.item.value,
 		"data-accordion-content": "",
+		style: styleToString({
+			"--bits-accordion-content-height": this.height.value
+				? `${this.height.value}px`
+				: undefined,
+			"--bits-accordion-content-width": this.width.value
+				? `${this.width.value}px`
+				: undefined,
+		}),
 	} as const);
 
-	constructor(item: AccordionItemState) {
+	constructor(props: AccordionContentStateProps, item: AccordionItemState) {
 		this.item = item;
+		this.isMountAnimationPrevented = this.item.isSelected;
+		this.presentEl = props.presentEl;
+
+		onMount(() => {
+			requestAnimationFrame(() => {
+				this.isMountAnimationPrevented = false;
+			});
+		});
+
+		$effect.pre(() => {
+			// eslint-disable-next-line no-unused-expressions
+			this.item.isSelected;
+			const node = this.presentEl.value;
+			if (!node) return;
+
+			this.currentStyle.value = this.currentStyle.value || {
+				transitionDuration: node.style.transitionDuration,
+				animationName: node.style.animationName,
+			};
+
+			// block any animations/transitions so the element renders at full dimensions
+			node.style.transitionDuration = "0s";
+			node.style.animationName = "none";
+
+			// get the dimensions of the element
+			const rect = node.getBoundingClientRect();
+			this.height.value = rect.height;
+			this.width.value = rect.width;
+
+			// unblock any animations/transitions that were originally set if not the initial render
+			if (!this.isMountAnimationPrevented) {
+				const { animationName, transitionDuration } = this.currentStyle.value;
+				node.style.transitionDuration = transitionDuration;
+				node.style.animationName = animationName;
+			}
+		});
 	}
 
 	get props() {
@@ -267,8 +323,8 @@ class AccordionContentState {
  * CONTEXT METHODS
  */
 
-export const ACCORDION_ROOT_KEY = Symbol("Accordion.Root");
-export const ACCORDION_ITEM_KEY = Symbol("Accordion.Item");
+export const ACCORDION_ROOT_KEY = "Accordion.Root";
+export const ACCORDION_ITEM_KEY = "Accordion.Item";
 
 type AccordionState = AccordionSingleState | AccordionMultiState;
 
@@ -277,7 +333,6 @@ type InitAccordionProps = {
 	value: Box<string> | Box<string[]>;
 	id: ReadonlyBox<string>;
 	disabled: ReadonlyBox<boolean>;
-	forceVisible: ReadonlyBox<boolean>;
 };
 
 export function setAccordionRootState(props: InitAccordionProps) {
@@ -318,8 +373,8 @@ export function getAccordionTriggerState(props: AccordionTriggerStateProps): Acc
 	return itemState.createTrigger(props);
 }
 
-export function getAccordionContentState(): AccordionContentState {
+export function getAccordionContentState(props: AccordionContentStateProps): AccordionContentState {
 	verifyContextDeps(ACCORDION_ITEM_KEY);
 	const itemState = getAccordionItemState();
-	return itemState.createContent();
+	return itemState.createContent(props);
 }
